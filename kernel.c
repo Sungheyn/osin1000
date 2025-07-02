@@ -2,17 +2,10 @@
 #include "common.h"
 
 #define PROCS_MAX 8
-
+extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
 #define PROC_UNUSED 0
 #define PROC_RUNNABLE 1
 
-struct process {
-    int pid;
-    int state;
-    vaddr_t sp;
-    uint32_t *page_table;
-    uint8_t stack[8192];
-};
 
 
 
@@ -73,8 +66,20 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
 void putchar(char ch) {
     sbi_call(ch, 0,0,0,0,0,0,1);
 }
+
 __attribute__((naked))
-void swtich_context(uint32_t* prev_sp, uint32_t* next_sp) {
+void user_entry(void) {
+    __asm__ __volatile__(
+        "csrw sepc, %[sepc]\n"
+        "csrw sstatus, %[sstatus]\n"
+        "sret \n"
+        :
+        : [sepc] "r" (USER_BASE),
+          [sstatus] "r" (SSTATUS_SPIE)
+    );
+}
+__attribute__((naked))
+void switch_context(uint32_t* prev_sp, uint32_t* next_sp) {
     __asm__ __volatile__(
                 // 현재 프로세스의 스택에 callee-saved 레지스터를 저장
         "addi sp, sp, -13 * 4\n" // 13개(4바이트씩) 레지스터 공간 확보
@@ -117,7 +122,12 @@ void swtich_context(uint32_t* prev_sp, uint32_t* next_sp) {
 
 struct process procs[PROCS_MAX];
 
-struct process* create_process(uint32_t pc) {
+long getchar(void) {
+    struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
+    return ret.error;
+}
+
+struct process *create_process(const void *image, size_t image_size) {
     struct process *proc = NULL;
     int i;
     for (i = 0; i < PROCS_MAX; i++) {
@@ -127,30 +137,43 @@ struct process* create_process(uint32_t pc) {
         }
     }
 
-    if (!proc) {
+    if (!proc)
         PANIC("no free process slots");
-    }
+
     uint32_t *sp = (uint32_t *) &proc->stack[sizeof(proc->stack)];
-    *(--sp) = 0;                      // s11
-    *(--sp) = 0;                      // s10
-    *(--sp) = 0;                      // s9
-    *(--sp) = 0;                      // s8
-    *(--sp) = 0;                      // s7
-    *(--sp) = 0;                      // s6
-    *(--sp) = 0;                      // s5
-    *(--sp) = 0;                      // s4
-    *(--sp) = 0;                      // s3
-    *(--sp) = 0;                      // s2
-    *(--sp) = 0;                      // s1
-    *(--sp) = 0;                      // s0
-    *(--sp) = (uint32_t) pc;          // ra (처음 실행 시 점프할 주소)
+    *--sp = 0;                      // s11
+    *--sp = 0;                      // s10
+    *--sp = 0;                      // s9
+    *--sp = 0;                      // s8
+    *--sp = 0;                      // s7
+    *--sp = 0;                      // s6
+    *--sp = 0;                      // s5
+    *--sp = 0;                      // s4
+    *--sp = 0;                      // s3
+    *--sp = 0;                      // s2
+    *--sp = 0;                      // s1
+    *--sp = 0;                      // s0
+    *--sp = (uint32_t) user_entry;  // ra
 
     uint32_t *page_table = (uint32_t *) alloc_pages(1);
-    for (paddr_t paddr = (paddr_t)__kernel_base; paddr < (paddr_t)__free_ram_end; paddr+=PAGE_SIZE) {
+
+    // Kernel pages.
+    for (paddr_t paddr = (paddr_t) __kernel_base;
+         paddr < (paddr_t) __free_ram_end; paddr += PAGE_SIZE)
         map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+
+
+    // User pages.
+    for (uint32_t off = 0; off < image_size; off += PAGE_SIZE) {
+        paddr_t page = alloc_pages(1);
+        size_t remaining = image_size - off;
+        size_t copy_size = PAGE_SIZE <= remaining ? PAGE_SIZE : remaining;
+        memcpy((void *) page, image + off, copy_size);
+        map_page(page_table, USER_BASE + off, page,
+                 PAGE_U | PAGE_R | PAGE_W | PAGE_X);
     }
 
-    proc->pid = i+1;
+    proc->pid = i + 1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (uint32_t) sp;
     proc->page_table = page_table;
@@ -163,16 +186,18 @@ struct process* idle_proc;
 void yield(void) {
     struct process *next = idle_proc;
     for (int i = 0; i < PROCS_MAX; i++) {
-        struct process* proc = &procs[(current_proc->pid+i) % PROCS_MAX];
+        struct process *proc = &procs[(current_proc->pid + i) % PROCS_MAX];
         if (proc->state == PROC_RUNNABLE && proc->pid > 0) {
             next = proc;
             break;
         }
     }
 
-    if (next == current_proc) {
+    if (next == current_proc)
         return;
-    }
+
+    struct process *prev = current_proc;
+    current_proc = next;
 
     __asm__ __volatile__(
         "sfence.vma\n"
@@ -183,39 +208,12 @@ void yield(void) {
         : [satp] "r" (SATP_SV32 | ((uint32_t) next->page_table / PAGE_SIZE)),
           [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
     );
-
-    struct process *prev = current_proc;
-    current_proc = next;
-    swtich_context(&prev->sp, &next->sp);
+    switch_context(&prev->sp, &next->sp);
 }
 void delay(void) {
     for (int i = 0; i < 30000000; i++)
         __asm__ __volatile__("nop"); // do nothing
 }
-
-struct process *proc_a;
-struct process *proc_b;
-
-void proc_a_entry(void) {
-    printf("starting process A\n");
-    while (1) {
-        putchar('A');
-        delay();
-        yield();
-    }
-}
-
-void proc_b_entry(void) {
-    printf("starting process B\n");
-    while (1) {
-        putchar('B');
-        delay();
-        yield();
-    }
-}
-
-
-
 __attribute__((naked))
 __attribute__((aligned(4)))
 void kernel_entry(void) {
@@ -306,23 +304,48 @@ void kernel_main(void) {
 
     WRITE_CSR(stvec, (uint32_t) kernel_entry);
 
-    idle_proc = create_process((uint32_t)NULL);
+    idle_proc = create_process(NULL, 0);
     idle_proc->pid = 0;
     current_proc = idle_proc;
 
-    proc_a = create_process((uint32_t) proc_a_entry);
-    proc_b = create_process((uint32_t) proc_b_entry);
+    create_process(_binary_shell_bin_start, (size_t)_binary_shell_bin_size);
     yield();
 
     PANIC("switched to idle process");
+}
+void handle_syscall(struct trap_frame* f) {
+    switch (f->a3) {
+        case SYS_GETCHAR:
+            while(1) {
+                long ch = getchar();
+                if (ch >= 0) {
+                    f->a0 = ch;
+                    break;
+                }
+
+                yield();
+            }
+            break;
+        case SYS_PUTCHAR:
+            putchar(f->a0);
+            break;
+        default:
+            PANIC("unexpected syscall a3=%x\n", f->a3);
+    }
 }
 
 void handle_trap(struct trap_frame *f) {
     uint32_t scause = READ_CSR(scause);
     uint32_t stval = READ_CSR(stval);
     uint32_t user_pc = READ_CSR(sepc);
+    if (scause == SCAUSE_ECALL) {
+        handle_syscall(f);
+        user_pc += 4;
+    } else {
+        PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
+    }
 
-    PANIC("unexpected trap scause=%x, stval=%x, sepc=%x\n", scause, stval, user_pc);
+    WRITE_CSR(sepc, user_pc);
 }
 
 __attribute__((section(".text.boot")))

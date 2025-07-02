@@ -1,11 +1,17 @@
 #include "common.h"
 
 void putchar(char ch);
-
+void *memcpy(void *dst, const void *src, size_t n) {
+    uint8_t *d = (uint8_t *) dst;
+    const uint8_t *s = (const uint8_t *) src;
+    while (n--)
+        *d++ = *s++;
+    return dst;
+}
 void printf(const char *fmt, ...) {
     va_list vargs;
     va_start(vargs, fmt);
-    
+
     while (*fmt) {
         if (*fmt == '%') {
             fmt++;
@@ -33,7 +39,7 @@ void printf(const char *fmt, ...) {
                     }
 
                     unsigned divisor = 1;
-                    while (magnitude / divisor > 9) 
+                    while (magnitude / divisor > 9)
                         divisor *= 10;
                     while (divisor > 0) {
                         putchar('0' + magnitude / divisor);

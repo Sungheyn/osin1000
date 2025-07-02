@@ -5,12 +5,23 @@
     printf("PANIC: %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
     while (1) {} \
 } while(0)
+struct process {
+    int pid;
+    int state;
+    vaddr_t sp;
+    uint32_t *page_table;
+    uint8_t stack[8192];
+};
 #define SATP_SV32 (1u << 31)
 #define PAGE_V (1 << 0)
 #define PAGE_R (1 << 1)
 #define PAGE_W (1 << 2)
 #define PAGE_X (1 << 3)
 #define PAGE_U (1 << 4)
+// 애플리케이션 이미지의 기본 가상 주소입니다. 이는 `user.ld`에 정의된 시작 주소와 일치해야 합니다.
+#define USER_BASE 0x1000000
+#define SSTATUS_SPIE (1 << 5)
+#define SCAUSE_ECALL 8
 
 struct sbiret
 {
