@@ -10,6 +10,7 @@ struct process {
     int pid;
     int state;
     vaddr_t sp;
+    uint32_t *page_table;
     uint8_t stack[8192];
 };
 
@@ -19,7 +20,7 @@ typedef unsigned char uint8_t;
 typedef unsigned int uint32_t;
 typedef uint32_t size_t;
 
-extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[];
+extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[], __kernel_base[];
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
                     long fid, long eid) {
@@ -31,7 +32,7 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, lo
     register long a5 __asm__("a5") = arg5;
     register long a6 __asm__("a6") = fid;
     register long a7 __asm__("a7") = eid;
-    
+
     __asm__ __volatile__("ecall" : "=r"(a0), "=r"(a1)
                                  : "r"(a0), "r"(a1), "r"(a2), "r"(a3), "r"(a4), "r"(a5),
                                    "r"(a6), "r"(a7)
@@ -49,6 +50,26 @@ paddr_t alloc_pages(uint32_t n) {
     memset((void*)paddr, 0, n * PAGE_SIZE);
     return paddr;
 }
+
+void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
+    if (!is_aligned(vaddr, PAGE_SIZE)) {
+        PANIC("unaligned vaddr %x", vaddr);
+    }
+    if (!is_aligned(paddr, PAGE_SIZE)) {
+        PANIC("unaligned paddr %x", paddr);
+    }
+
+    uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
+    if ((table1[vpn1] & PAGE_V) == 0) {
+        uint32_t pt_paddr = alloc_pages(1);
+        table1[vpn1] = ((pt_paddr / PAGE_SIZE) << 10) | PAGE_V;
+    }
+
+    uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
+    uint32_t *table0 = (uint32_t*) ((table1[vpn1] >> 10) * PAGE_SIZE);
+    table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
+}
+
 void putchar(char ch) {
     sbi_call(ch, 0,0,0,0,0,0,1);
 }
@@ -76,7 +97,7 @@ void swtich_context(uint32_t* prev_sp, uint32_t* next_sp) {
         "lw sp, (a1)\n"         // sp를 다음 프로세스의 값으로 변경
 
         // 다음 프로세스 스택에서 callee-saved 레지스터 복원
-        "lw ra,  0  * 4(sp)\n"  
+        "lw ra,  0  * 4(sp)\n"
         "lw s0,  1  * 4(sp)\n"
         "lw s1,  2  * 4(sp)\n"
         "lw s2,  3  * 4(sp)\n"
@@ -89,7 +110,7 @@ void swtich_context(uint32_t* prev_sp, uint32_t* next_sp) {
         "lw s9,  10 * 4(sp)\n"
         "lw s10, 11 * 4(sp)\n"
         "lw s11, 12 * 4(sp)\n"
-        "addi sp, sp, 13 * 4\n" 
+        "addi sp, sp, 13 * 4\n"
         "ret\n"
     );
 }
@@ -124,9 +145,15 @@ struct process* create_process(uint32_t pc) {
     *(--sp) = 0;                      // s0
     *(--sp) = (uint32_t) pc;          // ra (처음 실행 시 점프할 주소)
 
+    uint32_t *page_table = (uint32_t *) alloc_pages(1);
+    for (paddr_t paddr = (paddr_t)__kernel_base; paddr < (paddr_t)__free_ram_end; paddr+=PAGE_SIZE) {
+        map_page(page_table, paddr, paddr, PAGE_R | PAGE_W | PAGE_X);
+    }
+
     proc->pid = i+1;
     proc->state = PROC_RUNNABLE;
     proc->sp = (uint32_t) sp;
+    proc->page_table = page_table;
     return proc;
 }
 
@@ -136,7 +163,7 @@ struct process* idle_proc;
 void yield(void) {
     struct process *next = idle_proc;
     for (int i = 0; i < PROCS_MAX; i++) {
-        struct process* proc = &procs[(current_proc->pid+i) & PROCS_MAX];
+        struct process* proc = &procs[(current_proc->pid+i) % PROCS_MAX];
         if (proc->state == PROC_RUNNABLE && proc->pid > 0) {
             next = proc;
             break;
@@ -148,9 +175,13 @@ void yield(void) {
     }
 
     __asm__ __volatile__(
+        "sfence.vma\n"
+        "csrw satp, %[satp]\n"
+        "sfence.vma\n"
         "csrw sscratch, %[sscratch]\n"
         :
-        : [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
+        : [satp] "r" (SATP_SV32 | ((uint32_t) next->page_table / PAGE_SIZE)),
+          [sscratch] "r" ((uint32_t) &next->stack[sizeof(next->stack)])
     );
 
     struct process *prev = current_proc;
@@ -169,6 +200,7 @@ void proc_a_entry(void) {
     printf("starting process A\n");
     while (1) {
         putchar('A');
+        delay();
         yield();
     }
 }
@@ -177,6 +209,7 @@ void proc_b_entry(void) {
     printf("starting process B\n");
     while (1) {
         putchar('B');
+        delay();
         yield();
     }
 }

@@ -5,6 +5,12 @@
     printf("PANIC: %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
     while (1) {} \
 } while(0)
+#define SATP_SV32 (1u << 31)
+#define PAGE_V (1 << 0)
+#define PAGE_R (1 << 1)
+#define PAGE_W (1 << 2)
+#define PAGE_X (1 << 3)
+#define PAGE_U (1 << 4)
 
 struct sbiret
 {
