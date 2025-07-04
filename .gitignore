@@ -1,0 +1,6 @@
+.vscode
+shell.elf
+shell.map
+shell.bin.o
+kernel.map
+qemu.log

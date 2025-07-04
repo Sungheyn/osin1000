@@ -1,4 +1,5 @@
 #include "user.h"
+#include "common.h"
 
 extern char __stack_top[];
 
@@ -15,11 +16,25 @@ int syscall(int sysno, int arg0, int arg1, int arg2) {
 
     return a0;
 }
+int readfile(const char *filename, char *buf, int len) {
+    return syscall(SYS_READFILE, (int)filename, (int)buf, len);
+}
+int wrtiefile(const char *filename, const char *buf, int len) {
+    return syscall(SYS_WRTIEFILE, (int)filename, (int)buf, len);
+}
+
+void putchar(char ch) {
+    syscall(SYS_PUTCHAR, ch, 0, 0);
+}
+
+int getchar(void) {
+    return syscall(SYS_GETCHAR, 0, 0, 0);
+}
+
 
 __attribute__((noreturn)) void exit(void) {
     for (;;);
 }
-
 
 __attribute__((section(".text.start")))
 __attribute__((naked))
@@ -31,13 +46,4 @@ void start(void) {
         :: [stack_top] "r" (__stack_top)
     );
 
-}
-
-
-void putchar(char ch) {
-    syscall(1, ch, 0, 0);
-}
-
-int getchar(void) {
-    return syscall(2, 0, 0, 0);
 }
