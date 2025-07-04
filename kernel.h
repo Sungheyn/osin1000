@@ -22,6 +22,12 @@ struct process {
 #define USER_BASE 0x1000000
 #define SSTATUS_SPIE (1 << 5)
 #define SCAUSE_ECALL 8
+#define PROCS_MAX 8
+#define PROC_UNUSED 0
+#define PROC_RUNNABLE 1
+typedef unsigned char uint8_t;
+typedef unsigned int uint32_t;
+typedef uint32_t size_t;
 
 struct sbiret
 {

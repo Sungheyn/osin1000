@@ -1,18 +1,8 @@
 #include "kernel.h"
 #include "common.h"
 
-#define PROCS_MAX 8
+
 extern char _binary_shell_bin_start[], _binary_shell_bin_size[];
-#define PROC_UNUSED 0
-#define PROC_RUNNABLE 1
-
-
-
-
-typedef unsigned char uint8_t;
-typedef unsigned int uint32_t;
-typedef uint32_t size_t;
-
 extern char __bss[], __bss_end[], __stack_top[], __free_ram[], __free_ram_end[], __kernel_base[];
 
 struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, long arg5,
@@ -33,24 +23,23 @@ struct sbiret sbi_call(long arg0, long arg1, long arg2, long arg3, long arg4, lo
     return (struct sbiret){.error = a0, .value = a1};
 }
 paddr_t alloc_pages(uint32_t n) {
-    static paddr_t next_paddr = (paddr_t)__free_ram;
+    static paddr_t next_paddr = (paddr_t) __free_ram;
     paddr_t paddr = next_paddr;
     next_paddr += n * PAGE_SIZE;
 
-    if (next_paddr > (paddr_t) __free_ram_end) {
+    if (next_paddr > (paddr_t) __free_ram_end)
         PANIC("out of memory");
-    }
-    memset((void*)paddr, 0, n * PAGE_SIZE);
+
+    memset((void *) paddr, 0, n * PAGE_SIZE);
     return paddr;
 }
 
 void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
-    if (!is_aligned(vaddr, PAGE_SIZE)) {
+    if (!is_aligned(vaddr, PAGE_SIZE))
         PANIC("unaligned vaddr %x", vaddr);
-    }
-    if (!is_aligned(paddr, PAGE_SIZE)) {
+
+    if (!is_aligned(paddr, PAGE_SIZE))
         PANIC("unaligned paddr %x", paddr);
-    }
 
     uint32_t vpn1 = (vaddr >> 22) & 0x3ff;
     if ((table1[vpn1] & PAGE_V) == 0) {
@@ -59,13 +48,10 @@ void map_page(uint32_t *table1, uint32_t vaddr, paddr_t paddr, uint32_t flags) {
     }
 
     uint32_t vpn0 = (vaddr >> 12) & 0x3ff;
-    uint32_t *table0 = (uint32_t*) ((table1[vpn1] >> 10) * PAGE_SIZE);
+    uint32_t *table0 = (uint32_t *) ((table1[vpn1] >> 10) * PAGE_SIZE);
     table0[vpn0] = ((paddr / PAGE_SIZE) << 10) | flags | PAGE_V;
 }
 
-void putchar(char ch) {
-    sbi_call(ch, 0,0,0,0,0,0,1);
-}
 
 __attribute__((naked))
 void user_entry(void) {
@@ -121,6 +107,10 @@ void switch_context(uint32_t* prev_sp, uint32_t* next_sp) {
 }
 
 struct process procs[PROCS_MAX];
+
+void putchar(char ch) {
+    sbi_call(ch, 0,0,0,0,0,0,1);
+}
 
 long getchar(void) {
     struct sbiret ret = sbi_call(0, 0, 0, 0, 0, 0, 0, 2);
@@ -210,10 +200,7 @@ void yield(void) {
     );
     switch_context(&prev->sp, &next->sp);
 }
-void delay(void) {
-    for (int i = 0; i < 30000000; i++)
-        __asm__ __volatile__("nop"); // do nothing
-}
+
 __attribute__((naked))
 __attribute__((aligned(4)))
 void kernel_entry(void) {
@@ -296,25 +283,11 @@ void kernel_entry(void) {
         "sret\n"
     );
 }
-void kernel_main(void) {
-
-    memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
-
-    printf("\n\n");
-
-    WRITE_CSR(stvec, (uint32_t) kernel_entry);
-
-    idle_proc = create_process(NULL, 0);
-    idle_proc->pid = 0;
-    current_proc = idle_proc;
-
-    create_process(_binary_shell_bin_start, (size_t)_binary_shell_bin_size);
-    yield();
-
-    PANIC("switched to idle process");
-}
 void handle_syscall(struct trap_frame* f) {
     switch (f->a3) {
+        case SYS_PUTCHAR:
+            putchar(f->a0);
+            break;
         case SYS_GETCHAR:
             while(1) {
                 long ch = getchar();
@@ -325,9 +298,6 @@ void handle_syscall(struct trap_frame* f) {
 
                 yield();
             }
-            break;
-        case SYS_PUTCHAR:
-            putchar(f->a0);
             break;
         default:
             PANIC("unexpected syscall a3=%x\n", f->a3);
@@ -347,7 +317,23 @@ void handle_trap(struct trap_frame *f) {
 
     WRITE_CSR(sepc, user_pc);
 }
+void kernel_main(void) {
 
+    memset(__bss, 0, (size_t) __bss_end - (size_t) __bss);
+
+    printf("\n\n");
+
+    WRITE_CSR(stvec, (uint32_t) kernel_entry);
+
+    idle_proc = create_process(NULL, 0);
+    idle_proc->pid = 0;
+    current_proc = idle_proc;
+
+    create_process(_binary_shell_bin_start, (size_t)_binary_shell_bin_size);
+    yield();
+
+    PANIC("switched to idle process");
+}
 __attribute__((section(".text.boot")))
 __attribute__((naked))
 void boot(void) {
